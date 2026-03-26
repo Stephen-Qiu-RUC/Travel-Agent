@@ -162,27 +162,30 @@ def _amap_search(params: Dict[str, Any], around: bool = False) -> List[Dict[str,
 def _amap_geocode_city(city: str, key: str) -> Tuple[float, float] | None:
     """Geocode a city to (lng, lat).
 
-    Tries AMap geocode with city hint; if empty and city is not already Beijing, retries
-    with "Beijing" as a loose fallback. Returns None on any failure or malformed payload.
+    First tries geocoding with city hint; if empty, retries without the city hint instead of
+    falling back to a hardcoded location. Returns None on any failure or malformed payload.
     """
 
-    params = {"key": key, "address": city, "city": city, "output": "json"}
-    try:
-        resp = requests.get(AMAP_GEOCODE_URL, params=params, timeout=8)
-        resp.raise_for_status()
-        payload = resp.json()
-        geocodes = (payload or {}).get("geocodes", []) if isinstance(payload, dict) else []
-        if not geocodes:
-            # fallback: try without city hint (may help for non-Chinese input)
-            if city and city.lower() != "beijing":
-                return _amap_geocode_city("Beijing", key)
+    def _fetch(params: Dict[str, Any]) -> Tuple[float, float] | None:
+        try:
+            resp = requests.get(AMAP_GEOCODE_URL, params=params, timeout=8)
+            resp.raise_for_status()
+            payload = resp.json()
+            geocodes = (payload or {}).get("geocodes", []) if isinstance(payload, dict) else []
+            if not geocodes:
+                return None
+            loc = geocodes[0].get("location", "")
+            if not loc or "," not in loc:
+                return None
+            lng, lat = loc.split(",")
+            return float(lng), float(lat)
+        except Exception:
             return None
-        loc = geocodes[0].get("location", "")
-        if not loc or "," not in loc:
-            return None
-        lng, lat = loc.split(",")
-        return float(lng), float(lat)
-    except Exception:
-        if city and city.lower() != "beijing":
-            return _amap_geocode_city("Beijing", key)
-        return None
+
+    primary_params = {"key": key, "address": city, "city": city, "output": "json"}
+    loc = _fetch(primary_params)
+    if loc:
+        return loc
+
+    loose_params = {"key": key, "address": city, "output": "json"}
+    return _fetch(loose_params)

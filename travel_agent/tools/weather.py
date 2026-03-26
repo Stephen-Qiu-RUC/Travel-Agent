@@ -15,11 +15,11 @@ OWM_GEOCODE_URL = "https://api.openweathermap.org/geo/1.0/direct"
 
 
 def get_weather(city: str, date: str) -> Dict[str, Any]:
-    """Fetch weather stats via OWM 5-day forecast with clamping and retries.
+    """Fetch weather stats via OWM 5-day forecast with retries.
 
     Steps:
-    1) Parse target date; clamp to [today, today+4] to stay within OWM window.
-    2) Geocode city; if fails and city is 北京, retry with "Beijing".
+    1) Parse target date; reject if outside [today, today+4] because OWM only offers 5-day data.
+    2) Geocode city; if it fails, return an error instead of falling back to a hardcoded city.
     3) Call forecast API (with a small retry helper) and slice entries matching the target date.
     4) Derive min/max temp and precipitation probability (pop), boosting pop if rain volume exists.
     5) Map precipitation probability to crowd_risk. If no segments are found, return an error dict.
@@ -36,17 +36,16 @@ def get_weather(city: str, date: str) -> Dict[str, Any]:
         return {"error": f"Invalid date: {exc}"}
 
     today = datetime.utcnow().date()
-    # Clamp to OWM 5-day window to avoid 404/empty data
-    if target_date < today:
-        target_date = today
-    if target_date > today + timedelta(days=4):
-        target_date = today + timedelta(days=4)
+    max_date = today + timedelta(days=4)
+    if target_date < today or target_date > max_date:
+        return {
+            "error": "Requested date outside OWM 5-day window",
+            "supported_window": [today.isoformat(), max_date.isoformat()],
+        }
+
     adjusted_date = target_date.isoformat()
 
     loc = _owm_geocode_city(city, api_key)
-    if not loc and city and city.lower() == "北京":
-        # Fallback to English name to improve geocoding resilience
-        loc = _owm_geocode_city("Beijing", api_key)
     if not loc:
         return {"error": "Geocoding failed for city"}
 
@@ -100,7 +99,7 @@ def get_weather(city: str, date: str) -> Dict[str, Any]:
         "precipitation_probability": precipitation_probability,
         "temperature_range_c": [min_temp, max_temp],
         "crowd_risk": crowd_risk,
-        "note": "data from OpenWeatherMap 5-day forecast (date clamped to available window)",
+        "note": "data from OpenWeatherMap 5-day/3-hour forecast (5-day window)",
     }
 
 
