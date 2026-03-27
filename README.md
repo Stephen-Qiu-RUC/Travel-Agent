@@ -22,7 +22,7 @@
    - `AMAP_API_KEY`（必需，用于地点与路线）
 3) 运行示例：
    ```bash
-   uv run main.py --city 上海 --budget 3000 --days 3
+   uv run main.py --city 上海 --budget 3000 --days 3 --debug-messages
    ```
 
 ### 当前局限

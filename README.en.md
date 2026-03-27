@@ -22,7 +22,7 @@ Weather- and map-augmented travel planner focused on college-friendly budgets. D
    - `AMAP_API_KEY` (required for places and routing)
 3) Examples:
    ```bash
-   uv run main.py --city Shanghai --budget 3000 --days 3
+   uv run main.py --city Shanghai --budget 3000 --days 3 --debug-messages
    ```
 
 ### Current Limitations
