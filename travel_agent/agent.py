@@ -27,10 +27,26 @@ class TravelAgent:
     """Tool-augmented travel planner."""
 
     def __init__(self, client: OpenAI, model: str) -> None:
+        """Store the OpenAI client and model to be used for all chat calls."""
         self.client = client
         self.model = model
 
-    def run(self, agent_input: AgentInput, max_steps: int = 20, stream_output: bool = True) -> str:
+    def run(
+        self,
+        agent_input: AgentInput,
+        max_steps: int = 20,
+        stream_output: bool = True,
+        debug_messages: bool = False,
+    ) -> str:
+        """Main reasoning loop.
+
+        - Prefetch weather to avoid redundant tool calls and inject it as system guidance.
+        - Build the initial system/user messages with travel constraints and formatting rules.
+        - Iterate up to `max_steps`, letting the model either call tools or produce final content.
+        - If final content arrives, optionally stream for richer formatting; fall back to buffered text.
+        - Always return best-effort output, even if tools fail or streaming yields nothing.
+        - When `debug_messages` is True, emit per-step message/debug info to stderr for troubleshooting.
+        """
         weather_prefetch = self._collect_weather_forecasts(agent_input.city, agent_input.days)
 
         messages: List[Dict[str, Any]] = [
@@ -122,12 +138,15 @@ class TravelAgent:
             },
         ]
 
-        for _ in range(max_steps):
+        for step in range(max_steps):
+            # 单轮对话：先问模型要不要调工具
             response = self._chat_once(messages, tools)
             message = response["message"]
+            self._debug_loop_message(step=step, message=message, debug_messages=debug_messages)
             tool_calls = message.get("tool_calls") or []
 
             if tool_calls:
+                # 记录模型发起的工具调用并逐个执行，结果写回对话
                 messages.append({"role": "assistant", "content": message.get("content") or "", "tool_calls": tool_calls})
                 for call in tool_calls:
                     name = call.get("function", {}).get("name", "")
@@ -147,7 +166,7 @@ class TravelAgent:
             content = message.get("content")
             if content:
                 if stream_output:
-                    # Preserve the non-streamed content so we can fall back if streaming yields nothing
+                    # 先保存非流式草稿，随后尝试流式生成；若流式触发工具则再走工具分支
                     assistant_content = content
                     streamed = self._chat_stream(messages, tools)
                     tool_calls_stream = streamed.get("tool_calls") or []
@@ -171,11 +190,13 @@ class TravelAgent:
                     if streamed_content.strip() == "规划未完成，请稍后重试。":
                         return assistant_content
                     return streamed_content or assistant_content
+                # 未开启流式：直接返回当前内容
                 return content
 
         return "规划未完成，请稍后重试。"
 
     def _chat_once(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Make a single non-streaming chat call and normalize the response shape."""
         try:
             completion = self.client.chat.completions.create(
                 model=self.model,
@@ -184,7 +205,7 @@ class TravelAgent:
                 tool_choice="auto",
                 temperature=0.6,
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return {
                 "message": {
                     "role": "assistant",
@@ -203,7 +224,11 @@ class TravelAgent:
         }
 
     def _chat_stream(self, messages: List[Dict[str, Any]], tools: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Stream final assistant content; capture tool_calls if emitted mid-stream."""
+        """Stream the final assistant content while capturing any mid-stream tool calls.
+
+        Returns collected tool calls immediately if present so the caller can execute them;
+        otherwise accumulates streamed text and returns it as a single string when the stream ends.
+        """
 
         content_parts: List[str] = []
         collected_tool_calls: List[Dict[str, Any]] = []
@@ -231,6 +256,7 @@ class TravelAgent:
         return {"content": content}
 
     def _execute_tool(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+        """Dispatch a tool call by name with defensive argument handling."""
         try:
             if not name:
                 return {"error": "Unknown tool: missing name"}
@@ -258,7 +284,11 @@ class TravelAgent:
             return {"error": f"Tool execution failed: {exc}"}
 
     def _collect_weather_forecasts(self, city: str, days: int) -> List[Dict[str, Any]]:
-        """Prefetch weather for up to `days` within the 5-day window to reduce duplicate calls."""
+        """Prefetch weather within the 5-day API window to reduce duplicate calls later.
+
+        - Iterates day by day from today up to requested `days`, capped at five days ahead.
+        - Adds a note when the user asks for more than five days so downstream logic knows the gap.
+        """
 
         results: List[Dict[str, Any]] = []
         today = datetime.now(timezone.utc).date()
@@ -282,11 +312,11 @@ class TravelAgent:
         return results
 
     def _normalize_weather_date(self, date_str: str) -> str:
-        """Normalize requested weather date into the OWM 5-day window.
+        """Clamp a requested weather date into today's 5-day window supported by OWM.
 
-        - If missing/invalid, use today (UTC date).
-        - If before today, use today.
-        - If after today+4, clamp to today+4.
+        - Uses today when the input is missing or invalid.
+        - Floors to today when a past date is requested.
+        - Caps to today+4 when the request exceeds the window.
         """
 
         today = datetime.now(timezone.utc).date()
@@ -304,11 +334,43 @@ class TravelAgent:
         return parsed.isoformat()
 
     def _debug_tool_call(self, name: str, args: Dict[str, Any], result: Dict[str, Any]) -> None:
-        """Output debug info for tool calls."""
+        """Output debug info for tool calls; currently disabled to keep stderr clean."""
         # try:
         #     payload = {"tool": name, "args": args, "result": result}
         #     sys.stderr.write(json.dumps(payload, ensure_ascii=False) + "\n")
         # except Exception:
         #     return
         return
+
+    def _debug_loop_message(self, step: int, message: Dict[str, Any], debug_messages: bool) -> None:
+        """Emit the model message of a loop iteration when debugging is enabled."""
+
+        if not debug_messages:
+            return
+        try:
+            def _shorten(text: Any, limit: int = 200) -> Any:
+                if not isinstance(text, str):
+                    return text
+                return text if len(text) <= limit else text[: limit - 3] + "..."
+
+            raw_calls = message.get("tool_calls") or []
+            tool_calls_fmt: List[Dict[str, Any]] = []
+            for call in raw_calls:
+                func = call.get("function", {}) if isinstance(call, dict) else {}
+                tool_calls_fmt.append(
+                    {
+                        "name": func.get("name"),
+                        "arguments": _shorten(func.get("arguments"), 200),
+                    }
+                )
+
+            payload = {
+                "step": step,
+                "role": message.get("role"),
+                "content_preview": _shorten(message.get("content"), 200),
+                "tool_calls": tool_calls_fmt,
+            }
+            sys.stderr.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        except Exception:
+            return
 

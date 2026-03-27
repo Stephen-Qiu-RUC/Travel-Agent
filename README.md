@@ -23,8 +23,6 @@
 3) 运行示例：
    ```bash
    uv run main.py --city 上海 --budget 3000 --days 3
-   # 指定模型：
-   uv run main.py --city 广州 --budget 2000 --days 2 --model deepseek-chat
    ```
 
 ### 当前局限

@@ -13,7 +13,8 @@ from openai import OpenAI
 from travel_agent.agent import AgentInput, TravelAgent
 
 
-def _parse_cli_args() -> Tuple[AgentInput, str]:
+
+def _parse_cli_args() -> Tuple[AgentInput, str, bool]:
 	parser = argparse.ArgumentParser(description="Travel-Agent: hourly travel planner")
 	parser.add_argument("--city", required=True, help="Destination city, e.g., 北京")
 	parser.add_argument("--budget", type=int, required=True, help="Budget in CNY for the full trip")
@@ -23,13 +24,18 @@ def _parse_cli_args() -> Tuple[AgentInput, str]:
 		default=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
 		help="Model name (DeepSeek-compatible)",
 	)
+	parser.add_argument(
+		"--debug-messages",
+		action="store_true",
+		help="Print per-iteration model messages to stderr for debugging",
+	)
 	args = parser.parse_args()
-	return AgentInput(city=args.city, budget=args.budget, days=args.days), args.model
+	return AgentInput(city=args.city, budget=args.budget, days=args.days), args.model, args.debug_messages
 
 
 def main() -> int:
 	load_dotenv()
-	agent_input, model = _parse_cli_args()
+	agent_input, model, debug_messages = _parse_cli_args()
 
 	base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 	api_key = os.getenv("DEEPSEEK_API_KEY")
@@ -39,7 +45,7 @@ def main() -> int:
 
 	client = OpenAI(base_url=base_url, api_key=api_key)
 	agent = TravelAgent(client, model)
-	result = agent.run(agent_input)
+	result = agent.run(agent_input, debug_messages=debug_messages)
 	print(result)
 	return 0
 

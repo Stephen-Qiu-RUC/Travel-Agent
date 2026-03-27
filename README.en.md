@@ -23,8 +23,6 @@ Weather- and map-augmented travel planner focused on college-friendly budgets. D
 3) Examples:
    ```bash
    uv run main.py --city Shanghai --budget 3000 --days 3
-   # specify model
-   uv run main.py --city Guangzhou --budget 2000 --days 2 --model deepseek-chat
    ```
 
 ### Current Limitations
